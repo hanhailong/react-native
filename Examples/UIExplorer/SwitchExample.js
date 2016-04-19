@@ -15,12 +15,14 @@
  */
 'use strict';
 
-var React = require('react-native');
+var React = require('react');
+var ReactNative = require('react-native');
 var {
-  SwitchIOS,
+  Platform,
+  Switch,
   Text,
   View
-} = React;
+} = ReactNative;
 
 var BasicSwitchExample = React.createClass({
   getInitialState() {
@@ -32,11 +34,11 @@ var BasicSwitchExample = React.createClass({
   render() {
     return (
       <View>
-        <SwitchIOS
+        <Switch
           onValueChange={(value) => this.setState({falseSwitchIsOn: value})}
           style={{marginBottom: 10}}
           value={this.state.falseSwitchIsOn} />
-        <SwitchIOS
+        <Switch
           onValueChange={(value) => this.setState({trueSwitchIsOn: value})}
           value={this.state.trueSwitchIsOn} />
       </View>
@@ -48,11 +50,11 @@ var DisabledSwitchExample = React.createClass({
   render() {
     return (
       <View>
-        <SwitchIOS
+        <Switch
           disabled={true}
           style={{marginBottom: 10}}
           value={true} />
-        <SwitchIOS
+        <Switch
           disabled={true}
           value={false} />
       </View>
@@ -70,14 +72,14 @@ var ColorSwitchExample = React.createClass({
   render() {
     return (
       <View>
-        <SwitchIOS
+        <Switch
           onValueChange={(value) => this.setState({colorFalseSwitchIsOn: value})}
           onTintColor="#00ff00"
           style={{marginBottom: 10}}
           thumbTintColor="#0000ff"
           tintColor="#ff0000"
           value={this.state.colorFalseSwitchIsOn} />
-        <SwitchIOS
+        <Switch
           onValueChange={(value) => this.setState({colorTrueSwitchIsOn: value})}
           onTintColor="#00ff00"
           thumbTintColor="#0000ff"
@@ -99,36 +101,33 @@ var EventSwitchExample = React.createClass({
     return (
       <View style={{ flexDirection: 'row', justifyContent: 'space-around' }}>
         <View>
-          <SwitchIOS
+          <Switch
             onValueChange={(value) => this.setState({eventSwitchIsOn: value})}
             style={{marginBottom: 10}}
             value={this.state.eventSwitchIsOn} />
-          <SwitchIOS
+          <Switch
             onValueChange={(value) => this.setState({eventSwitchIsOn: value})}
             style={{marginBottom: 10}}
             value={this.state.eventSwitchIsOn} />
-            <Text>{this.state.eventSwitchIsOn ? "On" : "Off"}</Text>
+            <Text>{this.state.eventSwitchIsOn ? 'On' : 'Off'}</Text>
         </View>
         <View>
-          <SwitchIOS
+          <Switch
             onValueChange={(value) => this.setState({eventSwitchRegressionIsOn: value})}
             style={{marginBottom: 10}}
             value={this.state.eventSwitchRegressionIsOn} />
-          <SwitchIOS
+          <Switch
             onValueChange={(value) => this.setState({eventSwitchRegressionIsOn: value})}
             style={{marginBottom: 10}}
             value={this.state.eventSwitchRegressionIsOn} />
-          <Text>{this.state.eventSwitchRegressionIsOn ? "On" : "Off"}</Text>
+          <Text>{this.state.eventSwitchRegressionIsOn ? 'On' : 'Off'}</Text>
         </View>
       </View>
     );
   }
 });
 
-exports.title = '<SwitchIOS>';
-exports.displayName = 'SwitchExample';
-exports.description = 'Native boolean input';
-exports.examples = [
+var examples = [
   {
     title: 'Switches can be set to true or false',
     render(): ReactElement { return <BasicSwitchExample />; }
@@ -138,15 +137,23 @@ exports.examples = [
     render(): ReactElement { return <DisabledSwitchExample />; }
   },
   {
-    title: 'Custom colors can be provided',
-    render(): ReactElement { return <ColorSwitchExample />; }
-  },
-  {
     title: 'Change events can be detected',
     render(): ReactElement { return <EventSwitchExample />; }
   },
   {
     title: 'Switches are controlled components',
-    render(): ReactElement { return <SwitchIOS />; }
+    render(): ReactElement { return <Switch />; }
   }
 ];
+
+if (Platform.OS === 'ios') {
+  examples.push({
+    title: 'Custom colors can be provided',
+    render(): ReactElement { return <ColorSwitchExample />; }
+  });
+}
+
+exports.title = '<Switch>';
+exports.displayName = 'SwitchExample';
+exports.description = 'Native boolean input';
+exports.examples = examples;

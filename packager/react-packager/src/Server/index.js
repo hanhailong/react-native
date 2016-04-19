@@ -8,18 +8,19 @@
  */
 'use strict';
 
-var url = require('url');
-var path = require('path');
-var declareOpts = require('../lib/declareOpts');
-var FileWatcher = require('../FileWatcher');
-var Packager = require('../Packager');
-var Activity = require('../Activity');
-var q = require('q');
-var _ = require('underscore');
+const Activity = require('../Activity');
+const AssetServer = require('../AssetServer');
+const FileWatcher = require('node-haste').FileWatcher;
+const getPlatformExtension = require('node-haste').getPlatformExtension;
+const Bundler = require('../Bundler');
+const Promise = require('promise');
 
-module.exports = Server;
+const _ = require('lodash');
+const declareOpts = require('../lib/declareOpts');
+const path = require('path');
+const url = require('url');
 
-var validateOpts = declareOpts({
+const validateOpts = declareOpts({
   projectRoots: {
     type: 'array',
     required: true,
@@ -55,244 +56,503 @@ var validateOpts = declareOpts({
     type: 'array',
     required: false,
   },
+  assetExts: {
+    type: 'array',
+    default: [
+      'bmp', 'gif', 'jpg', 'jpeg', 'png', 'psd', 'svg', 'webp', // Image formats
+      'm4v', 'mov', 'mp4', 'mpeg', 'mpg', 'webm', // Video formats
+      'aac', 'aiff', 'caf', 'm4a', 'mp3', 'wav', // Audio formats
+      'html', 'pdf', // Document formats
+    ],
+  },
+  transformTimeoutInterval: {
+    type: 'number',
+    required: false,
+  },
+  getTransformOptionsModulePath: {
+    type: 'string',
+    required: false,
+  },
+  silent: {
+    type: 'boolean',
+    default: false,
+  },
 });
 
-function Server(options) {
-  var opts = validateOpts(options);
-  this._projectRoots = opts.projectRoots;
-  this._packages = Object.create(null);
-  this._packager = new Packager(opts);
-  this._changeWatchers = [];
+const bundleOpts = declareOpts({
+  sourceMapUrl: {
+    type: 'string',
+    required: false,
+  },
+  entryFile: {
+    type: 'string',
+    required: true,
+  },
+  dev: {
+    type: 'boolean',
+    default: true,
+  },
+  minify: {
+    type: 'boolean',
+    default: false,
+  },
+  runModule: {
+    type: 'boolean',
+    default: true,
+  },
+  inlineSourceMap: {
+    type: 'boolean',
+    default: false,
+  },
+  platform: {
+    type: 'string',
+    required: true,
+  },
+  runBeforeMainModule: {
+    type: 'array',
+    default: [
+      // Ensures essential globals are available and are patched correctly.
+      'InitializeJavaScriptAppEngine'
+    ],
+  },
+  unbundle: {
+    type: 'boolean',
+    default: false,
+  },
+  hot: {
+    type: 'boolean',
+    default: false,
+  },
+  entryModuleOnly: {
+    type: 'boolean',
+    default: false,
+  },
+});
 
-  this._fileWatcher = options.nonPersistent
-    ? FileWatcher.createDummyWatcher()
-    : new FileWatcher(options.projectRoots);
+const dependencyOpts = declareOpts({
+  platform: {
+    type: 'string',
+    required: true,
+  },
+  dev: {
+    type: 'boolean',
+    default: true,
+  },
+  entryFile: {
+    type: 'string',
+    required: true,
+  },
+  recursive: {
+    type: 'boolean',
+    default: true,
+  },
+  hot: {
+    type: 'boolean',
+    default: false,
+  },
+});
 
-  var onFileChange = this._onFileChange.bind(this);
-  this._fileWatcher.on('all', onFileChange);
+class Server {
+  constructor(options) {
+    const opts = validateOpts(options);
 
-  var self = this;
-  this._debouncedFileChangeHandler = _.debounce(function(filePath) {
-    self._rebuildPackages(filePath);
-    self._informChangeWatchers();
-  }, 50);
-}
+    this._projectRoots = opts.projectRoots;
+    this._bundles = Object.create(null);
+    this._changeWatchers = [];
+    this._fileChangeListeners = [];
 
-Server.prototype._onFileChange = function(type, filepath, root) {
-  var absPath = path.join(root, filepath);
-  this._packager.invalidateFile(absPath);
-  // Make sure the file watcher event runs through the system before
-  // we rebuild the packages.
-  this._debouncedFileChangeHandler(absPath);
-};
+    const assetGlobs = opts.assetExts.map(ext => '**/*.' + ext);
 
-Server.prototype._rebuildPackages = function() {
-  var buildPackage = this._buildPackage.bind(this);
-  var packages = this._packages;
-  Object.keys(packages).forEach(function(key) {
-    var options = getOptionsFromUrl(key);
-    // Wait for a previous build (if exists) to finish.
-    packages[key] = (packages[key] || q()).finally(function() {
-      // With finally promise callback we can't change the state of the promise
-      // so we need to reassign the promise.
-      packages[key] = buildPackage(options).then(function(p) {
-        // Make a throwaway call to getSource to cache the source string.
-        p.getSource({
-          inlineSourceMap: options.inlineSourceMap,
-          minify: options.minify,
-        });
-        return p;
-      });
+    var watchRootConfigs = opts.projectRoots.map(dir => {
+      return {
+        dir: dir,
+        globs: [
+          '**/*.js',
+          '**/*.json',
+        ].concat(assetGlobs),
+      };
     });
-    return packages[key];
-  });
-};
 
-Server.prototype._informChangeWatchers = function() {
-  var watchers = this._changeWatchers;
-  var headers = {
-    'Content-Type': 'application/json; charset=UTF-8',
-  };
+    if (opts.assetRoots != null) {
+      watchRootConfigs = watchRootConfigs.concat(
+        opts.assetRoots.map(dir => {
+          return {
+            dir: dir,
+            globs: assetGlobs,
+          };
+        })
+      );
+    }
 
-  watchers.forEach(function(w) {
-    w.res.writeHead(205, headers);
-    w.res.end(JSON.stringify({ changed: true }));
-  });
+    this._fileWatcher = options.nonPersistent
+      ? FileWatcher.createDummyWatcher()
+      : new FileWatcher(watchRootConfigs, {useWatchman: true});
 
-  this._changeWatchers = [];
-};
+    this._assetServer = new AssetServer({
+      projectRoots: opts.projectRoots,
+      assetExts: opts.assetExts,
+    });
 
-Server.prototype.end = function() {
-  q.all([
-    this._fileWatcher.end(),
-    this._packager.kill(),
-  ]);
-};
+    const bundlerOpts = Object.create(opts);
+    bundlerOpts.fileWatcher = this._fileWatcher;
+    bundlerOpts.assetServer = this._assetServer;
+    this._bundler = new Bundler(bundlerOpts);
 
-Server.prototype._buildPackage = function(options) {
-  return this._packager.package(
-    options.main,
-    options.runModule,
-    options.sourceMapUrl,
-    options.dev
-  );
-};
+    this._fileWatcher.on('all', this._onFileChange.bind(this));
 
-Server.prototype.buildPackageFromUrl = function(reqUrl) {
-  var options = getOptionsFromUrl(reqUrl);
-  return this._buildPackage(options);
-};
+    this._debouncedFileChangeHandler = _.debounce(filePath => {
+      this._clearBundles();
+      this._informChangeWatchers();
+    }, 50);
+  }
 
-Server.prototype.getDependencies = function(main) {
-  return this._packager.getDependencies(main);
-};
+  end() {
+    Promise.all([
+      this._fileWatcher.end(),
+      this._bundler.kill(),
+    ]);
+  }
 
-Server.prototype._processDebugRequest = function(reqUrl, res) {
-  var ret = '<!doctype html>';
-  var pathname = url.parse(reqUrl).pathname;
-  var parts = pathname.split('/').filter(Boolean);
-  if (parts.length === 1) {
-    ret += '<div><a href="/debug/packages">Cached Packages</a></div>';
-    ret += '<div><a href="/debug/graph">Dependency Graph</a></div>';
-    res.end(ret);
-  } else if (parts[1] === 'packages') {
-    ret += '<h1> Cached Packages </h1>';
-    q.all(Object.keys(this._packages).map(function(url) {
-      return this._packages[url].then(function(p) {
-        ret += '<div><h2>' + url + '</h2>';
-        ret += p.getDebugInfo();
-      });
-    }, this)).then(
-      function() { res.end(ret); },
-      function(e) {
-        res.wrteHead(500);
-        res.end('Internal Error');
-        console.log(e.stack);
+  setHMRFileChangeListener(listener) {
+    this._hmrFileChangeListener = listener;
+  }
+
+  addFileChangeListener(listener) {
+    if (this._fileChangeListeners.indexOf(listener) === -1) {
+      this._fileChangeListeners.push(listener);
+    }
+  }
+
+  buildBundle(options) {
+    return Promise.resolve().then(() => {
+      if (!options.platform) {
+        options.platform = getPlatformExtension(options.entryFile);
       }
+
+      const opts = bundleOpts(options);
+      return this._bundler.bundle(opts);
+    });
+  }
+
+  buildPrepackBundle(options) {
+    return Promise.resolve().then(() => {
+      if (!options.platform) {
+        options.platform = getPlatformExtension(options.entryFile);
+      }
+
+      const opts = bundleOpts(options);
+      return this._bundler.prepackBundle(opts);
+    });
+  }
+
+  buildBundleFromUrl(reqUrl) {
+    const options = this._getOptionsFromUrl(reqUrl);
+    return this.buildBundle(options);
+  }
+
+  buildBundleForHMR(modules, host, port) {
+    return this._bundler.hmrBundle(modules, host, port);
+  }
+
+  getShallowDependencies(options) {
+    return Promise.resolve().then(() => {
+      if (!options.platform) {
+        options.platform = getPlatformExtension(options.entryFile);
+      }
+
+      const opts = dependencyOpts(options);
+      return this._bundler.getShallowDependencies(opts);
+    });
+  }
+
+  getModuleForPath(entryFile) {
+    return this._bundler.getModuleForPath(entryFile);
+  }
+
+  getDependencies(options) {
+    return Promise.resolve().then(() => {
+      if (!options.platform) {
+        options.platform = getPlatformExtension(options.entryFile);
+      }
+
+      const opts = dependencyOpts(options);
+      return this._bundler.getDependencies(opts);
+    });
+  }
+
+  getOrderedDependencyPaths(options) {
+    return Promise.resolve().then(() => {
+      const opts = dependencyOpts(options);
+      return this._bundler.getOrderedDependencyPaths(opts);
+    });
+  }
+
+  _onFileChange(type, filepath, root) {
+    const absPath = path.join(root, filepath);
+    this._bundler.invalidateFile(absPath);
+
+    // If Hot Loading is enabled avoid rebuilding bundles and sending live
+    // updates. Instead, send the HMR updates right away and clear the bundles
+    // cache so that if the user reloads we send them a fresh bundle
+    if (this._hmrFileChangeListener) {
+      // Clear cached bundles in case user reloads
+      this._clearBundles();
+      this._hmrFileChangeListener(absPath, this._bundler.stat(absPath));
+      return;
+    }
+
+    Promise.all(
+      this._fileChangeListeners.map(listener => listener(absPath))
+    ).then(
+      () => this._onFileChangeComplete(absPath),
+      () => this._onFileChangeComplete(absPath)
     );
-  } else if (parts[1] === 'graph'){
-    ret += '<h1> Dependency Graph </h2>';
-    ret += this._packager.getGraphDebugInfo();
-    res.end(ret);
-  } else {
-    res.writeHead('404');
-    res.end('Invalid debug request');
-    return;
   }
-};
 
-Server.prototype._processOnChangeRequest = function(req, res) {
-  var watchers = this._changeWatchers;
+  _onFileChangeComplete(absPath) {
+    // Make sure the file watcher event runs through the system before
+    // we rebuild the bundles.
+    this._debouncedFileChangeHandler(absPath);
+  }
 
-  watchers.push({
-    req: req,
-    res: res,
-  });
+  _clearBundles() {
+    this._bundles = Object.create(null);
+  }
 
-  req.on('close', function() {
-    for (var i = 0; i < watchers.length; i++) {
-      if (watchers[i] && watchers[i].req === req) {
-        watchers.splice(i, 1);
-        break;
-      }
+  _informChangeWatchers() {
+    const watchers = this._changeWatchers;
+    const headers = {
+      'Content-Type': 'application/json; charset=UTF-8',
+    };
+
+    watchers.forEach(function(w) {
+      w.res.writeHead(205, headers);
+      w.res.end(JSON.stringify({ changed: true }));
+    });
+
+    this._changeWatchers = [];
+  }
+
+  _processDebugRequest(reqUrl, res) {
+    var ret = '<!doctype html>';
+    const pathname = url.parse(reqUrl).pathname;
+    const parts = pathname.split('/').filter(Boolean);
+    if (parts.length === 1) {
+      ret += '<div><a href="/debug/bundles">Cached Bundles</a></div>';
+      ret += '<div><a href="/debug/graph">Dependency Graph</a></div>';
+      res.end(ret);
+    } else if (parts[1] === 'bundles') {
+      ret += '<h1> Cached Bundles </h1>';
+      Promise.all(Object.keys(this._bundles).map(optionsJson =>
+        this._bundles[optionsJson].then(p => {
+          ret += '<div><h2>' + optionsJson + '</h2>';
+          ret += p.getDebugInfo();
+        })
+      )).then(
+        () => res.end(ret),
+        e => {
+          res.writeHead(500);
+          res.end('Internal Error');
+          console.log(e.stack);
+        }
+      );
+    } else if (parts[1] === 'graph'){
+      ret += '<h1> Dependency Graph </h2>';
+      ret += this._bundler.getGraphDebugInfo();
+      res.end(ret);
+    } else {
+      res.writeHead('404');
+      res.end('Invalid debug request');
+      return;
     }
-  });
-};
-
-Server.prototype.processRequest = function(req, res, next) {
-  var urlObj = url.parse(req.url, true);
-  var pathname = urlObj.pathname;
-
-  var requestType;
-  if (pathname.match(/\.bundle$/)) {
-    requestType = 'bundle';
-  } else if (pathname.match(/\.map$/)) {
-    requestType = 'map';
-  } else if (pathname.match(/^\/debug/)) {
-    this._processDebugRequest(req.url, res);
-    return;
-  } else if (pathname.match(/^\/onchange\/?$/)) {
-    this._processOnChangeRequest(req, res);
-    return;
-  } else {
-    next();
-    return;
   }
 
-  var startReqEventId = Activity.startEvent('request:' + req.url);
-  var options = getOptionsFromUrl(req.url);
-  var building = this._packages[req.url] || this._buildPackage(options);
+  _processOnChangeRequest(req, res) {
+    const watchers = this._changeWatchers;
 
-  this._packages[req.url] = building;
+    watchers.push({
+      req: req,
+      res: res,
+    });
+
+    req.on('close', () => {
+      for (let i = 0; i < watchers.length; i++) {
+        if (watchers[i] && watchers[i].req === req) {
+          watchers.splice(i, 1);
+          break;
+        }
+      }
+    });
+  }
+
+  _processAssetsRequest(req, res) {
+    const urlObj = url.parse(req.url, true);
+    const assetPath = urlObj.pathname.match(/^\/assets\/(.+)$/);
+    const assetEvent = Activity.startEvent(`processing asset request ${assetPath[1]}`);
+    this._assetServer.get(assetPath[1], urlObj.query.platform)
+      .then(
+        data => res.end(data),
+        error => {
+          console.error(error.stack);
+          res.writeHead('404');
+          res.end('Asset not found');
+        }
+      ).done(() => Activity.endEvent(assetEvent));
+  }
+
+  processRequest(req, res, next) {
+    const urlObj = url.parse(req.url, true);
+    var pathname = urlObj.pathname;
+
+    var requestType;
+    if (pathname.match(/\.bundle$/)) {
+      requestType = 'bundle';
+    } else if (pathname.match(/\.map$/)) {
+      requestType = 'map';
+    } else if (pathname.match(/\.assets$/)) {
+      requestType = 'assets';
+    } else if (pathname.match(/^\/debug/)) {
+      this._processDebugRequest(req.url, res);
+      return;
+    } else if (pathname.match(/^\/onchange\/?$/)) {
+      this._processOnChangeRequest(req, res);
+      return;
+    } else if (pathname.match(/^\/assets\//)) {
+      this._processAssetsRequest(req, res);
+      return;
+    } else {
+      next();
+      return;
+    }
+
+    const startReqEventId = Activity.startEvent('request:' + req.url);
+    const options = this._getOptionsFromUrl(req.url);
+    const optionsJson = JSON.stringify(options);
+    const building = this._bundles[optionsJson] || this.buildBundle(options);
+
+    this._bundles[optionsJson] = building;
     building.then(
-    function(p) {
-      if (requestType === 'bundle') {
-        res.end(p.getSource({
-          inlineSourceMap: options.inlineSourceMap,
-          minify: options.minify,
-        }));
-        Activity.endEvent(startReqEventId);
-      } else if (requestType === 'map') {
-        res.end(JSON.stringify(p.getSourceMap()));
-        Activity.endEvent(startReqEventId);
+      p => {
+        if (requestType === 'bundle') {
+          var bundleSource = p.getSource({
+            inlineSourceMap: options.inlineSourceMap,
+            minify: options.minify,
+            dev: options.dev,
+          });
+          res.setHeader('Content-Type', 'application/javascript');
+          res.setHeader('ETag', p.getEtag());
+          if (req.headers['if-none-match'] === res.getHeader('ETag')){
+            res.statusCode = 304;
+            res.end();
+          } else {
+            res.end(bundleSource);
+          }
+          Activity.endEvent(startReqEventId);
+        } else if (requestType === 'map') {
+          var sourceMap = p.getSourceMap({
+            minify: options.minify,
+            dev: options.dev,
+          });
+
+          if (typeof sourceMap !== 'string') {
+            sourceMap = JSON.stringify(sourceMap);
+          }
+
+          res.setHeader('Content-Type', 'application/json');
+          res.end(sourceMap);
+          Activity.endEvent(startReqEventId);
+        } else if (requestType === 'assets') {
+          var assetsList = JSON.stringify(p.getAssets());
+          res.setHeader('Content-Type', 'application/json');
+          res.end(assetsList);
+          Activity.endEvent(startReqEventId);
+        }
+      },
+      this._handleError.bind(this, res, optionsJson)
+    ).done();
+  }
+
+  _handleError(res, bundleID, error) {
+    res.writeHead(error.status || 500, {
+      'Content-Type': 'application/json; charset=UTF-8',
+    });
+
+    if (error.type === 'TransformError' ||
+        error.type === 'NotFoundError' ||
+        error.type === 'UnableToResolveError') {
+      error.errors = [{
+        description: error.description,
+        filename: error.filename,
+        lineNumber: error.lineNumber,
+      }];
+      res.end(JSON.stringify(error));
+
+      if (error.type === 'NotFoundError') {
+        delete this._bundles[bundleID];
       }
-    },
-    function(error) {
-      handleError(res, error);
+    } else {
+      console.error(error.stack || error);
+      res.end(JSON.stringify({
+        type: 'InternalError',
+        message: 'react-packager has encountered an internal error, ' +
+          'please check your terminal error output for more details',
+      }));
     }
-  ).done();
-};
-
-function getOptionsFromUrl(reqUrl) {
-  // `true` to parse the query param as an object.
-  var urlObj = url.parse(reqUrl, true);
-  var pathname = urlObj.pathname;
-
-  // Backwards compatibility. Options used to be as added as '.' to the
-  // entry module name. We can safely remove these options.
-  var entryFile = pathname.replace(/^\//, '').split('.').filter(function(part) {
-    if (part === 'includeRequire' || part === 'runModule' ||
-        part === 'bundle' || part === 'map') {
-      return false;
-    }
-    return true;
-  }).join('.') + '.js';
-
-  return {
-    sourceMapUrl: pathname.replace(/\.bundle$/, '.map'),
-    main: entryFile,
-    dev: getBoolOptionFromQuery(urlObj.query, 'dev', true),
-    minify: getBoolOptionFromQuery(urlObj.query, 'minify'),
-    runModule: getBoolOptionFromQuery(urlObj.query, 'runModule', true),
-    inlineSourceMap: getBoolOptionFromQuery(
-      urlObj.query,
-      'inlineSourceMap',
-      false
-    ),
-  };
-}
-
-function getBoolOptionFromQuery(query, opt, defaultVal) {
-  if (query[opt] == null && defaultVal != null) {
-    return defaultVal;
   }
 
-  return query[opt] === 'true' || query[opt] === '1';
-}
+  _getOptionsFromUrl(reqUrl) {
+    // `true` to parse the query param as an object.
+    const urlObj = url.parse(reqUrl, true);
+    // node v0.11.14 bug see https://github.com/facebook/react-native/issues/218
+    urlObj.query = urlObj.query || {};
 
-function handleError(res, error) {
-  res.writeHead(500, {
-    'Content-Type': 'application/json; charset=UTF-8',
-  });
+    const pathname = decodeURIComponent(urlObj.pathname);
 
-  if (error.type === 'TransformError') {
-    res.end(JSON.stringify(error));
-  } else {
-    console.error(error.stack || error);
-    res.end(JSON.stringify({
-      type: 'InternalError',
-      message: 'react-packager has encountered an internal error, ' +
-        'please check your terminal error output for more details',
-    }));
+    // Backwards compatibility. Options used to be as added as '.' to the
+    // entry module name. We can safely remove these options.
+    const entryFile = pathname.replace(/^\//, '').split('.').filter(part => {
+      if (part === 'includeRequire' || part === 'runModule' ||
+          part === 'bundle' || part === 'map' || part === 'assets') {
+        return false;
+      }
+      return true;
+    }).join('.') + '.js';
+
+    const sourceMapUrlObj = Object.assign({}, urlObj);
+    sourceMapUrlObj.pathname = pathname.replace(/\.bundle$/, '.map');
+
+    // try to get the platform from the url
+    const platform = urlObj.query.platform ||
+      getPlatformExtension(pathname);
+
+    return {
+      sourceMapUrl: url.format(sourceMapUrlObj),
+      entryFile: entryFile,
+      dev: this._getBoolOptionFromQuery(urlObj.query, 'dev', true),
+      minify: this._getBoolOptionFromQuery(urlObj.query, 'minify'),
+      hot: this._getBoolOptionFromQuery(urlObj.query, 'hot', false),
+      runModule: this._getBoolOptionFromQuery(urlObj.query, 'runModule', true),
+      inlineSourceMap: this._getBoolOptionFromQuery(
+        urlObj.query,
+        'inlineSourceMap',
+        false
+      ),
+      platform: platform,
+      entryModuleOnly: this._getBoolOptionFromQuery(
+        urlObj.query,
+        'entryModuleOnly',
+        false,
+      ),
+    };
+  }
+
+  _getBoolOptionFromQuery(query, opt, defaultVal) {
+    if (query[opt] == null && defaultVal != null) {
+      return defaultVal;
+    }
+
+    return query[opt] === 'true' || query[opt] === '1';
   }
 }
+
+module.exports = Server;

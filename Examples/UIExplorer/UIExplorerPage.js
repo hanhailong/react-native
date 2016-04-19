@@ -16,12 +16,13 @@
  */
 'use strict';
 
-var React = require('react-native');
+var React = require('react');
+var ReactNative = require('react-native');
 var {
   ScrollView,
   StyleSheet,
   View,
-} = React;
+} = ReactNative;
 
 var UIExplorerTitle = require('./UIExplorerTitle');
 
@@ -37,10 +38,11 @@ var UIExplorerPage = React.createClass({
     var ContentWrapper;
     var wrapperProps = {};
     if (this.props.noScroll) {
-      ContentWrapper = View;
+      ContentWrapper = (View: ReactClass<any>);
     } else {
-      ContentWrapper = ScrollView;
-      wrapperProps.keyboardShouldPeristTaps = true;
+      ContentWrapper = (ScrollView: ReactClass<any>);
+      wrapperProps.automaticallyAdjustContentInsets = !this.props.title;
+      wrapperProps.keyboardShouldPersistTaps = true;
       wrapperProps.keyboardDismissMode = 'interactive';
     }
     var title = this.props.title ?
@@ -64,7 +66,6 @@ var UIExplorerPage = React.createClass({
 var styles = StyleSheet.create({
   container: {
     backgroundColor: '#e9eaed',
-    paddingTop: 15,
     flex: 1,
   },
   spacer: {
@@ -72,6 +73,7 @@ var styles = StyleSheet.create({
   },
   wrapper: {
     flex: 1,
+    paddingTop: 10,
   },
 });
 

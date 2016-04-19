@@ -7,10 +7,11 @@
  * of patent rights can be found in the PATENTS file in the same directory.
  *
  * @providesModule ImageResizeMode
+ * @flow
  */
 'use strict';
 
-var keyMirror = require('keyMirror');
+var keyMirror = require('fbjs/lib/keyMirror');
 
 /**
  * ImageResizeMode - Enum for different image resizing modes, set via
@@ -29,10 +30,16 @@ var ImageResizeMode = keyMirror({
   cover: null,
   /**
    * stretch - The image will be stretched to fill the entire frame of the
-   * view without clipping.  This may change the aspect ratio of the image,
-   * distoring it.  Only supported on iOS.
+   * view without clipping. This may change the aspect ratio of the image,
+   * distorting it.
    */
   stretch: null,
+  /**
+  * center - The image will be scaled down such that it is completely visible,
+  * if bigger than the area of the view.
+  * The image will not be scaled up.
+  */
+  center: null,
 });
 
 module.exports = ImageResizeMode;

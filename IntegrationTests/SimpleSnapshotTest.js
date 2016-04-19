@@ -5,16 +5,20 @@
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree. An additional grant
  * of patent rights can be found in the PATENTS file in the same directory.
+ *
+ * @flow
  */
 'use strict';
 
-var React = require('react-native');
+var React = require('react');
+var ReactNative = require('react-native');
+var requestAnimationFrame = require('fbjs/lib/requestAnimationFrame');
+
 var {
   StyleSheet,
   View,
-} = React;
-
-var { TestModule } = React.addons;
+} = ReactNative;
+var { TestModule } = ReactNative.NativeModules;
 
 var SimpleSnapshotTest = React.createClass({
   componentDidMount() {
@@ -24,8 +28,8 @@ var SimpleSnapshotTest = React.createClass({
     requestAnimationFrame(() => TestModule.verifySnapshot(this.done));
   },
 
-  done() {
-    TestModule.markTestCompleted();
+  done(success : boolean) {
+    TestModule.markTestPassed(success);
   },
 
   render() {
@@ -52,5 +56,7 @@ var styles = StyleSheet.create({
     backgroundColor: 'blue',
   },
 });
+
+SimpleSnapshotTest.displayName = 'SimpleSnapshotTest';
 
 module.exports = SimpleSnapshotTest;

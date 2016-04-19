@@ -12,6 +12,7 @@
 #import "RCTAssert.h"
 #import "RCTBridge.h"
 #import "RCTEventDispatcher.h"
+#import "RCTUtils.h"
 
 static NSString *RCTCurrentAppBackgroundState()
 {
@@ -20,12 +21,15 @@ static NSString *RCTCurrentAppBackgroundState()
   dispatch_once(&onceToken, ^{
     states = @{
       @(UIApplicationStateActive): @"active",
-      @(UIApplicationStateBackground): @"background",
-      @(UIApplicationStateInactive): @"inactive"
+      @(UIApplicationStateBackground): @"background"
     };
   });
 
-  return states[@([[UIApplication sharedApplication] applicationState])] ?: @"unknown";
+  if (RCTRunningInAppExtension()) {
+    return @"extension";
+  }
+
+  return states[@(RCTSharedApplication().applicationState)] ?: @"unknown";
 }
 
 @implementation RCTAppState
@@ -35,27 +39,40 @@ static NSString *RCTCurrentAppBackgroundState()
 
 @synthesize bridge = _bridge;
 
+RCT_EXPORT_MODULE()
+
 #pragma mark - Lifecycle
 
-- (instancetype)init
+- (void)setBridge:(RCTBridge *)bridge
 {
-  if ((self = [super init])) {
+  _bridge = bridge;
 
-    _lastKnownState = RCTCurrentAppBackgroundState();
+  // Is this thread-safe?
+  _lastKnownState = RCTCurrentAppBackgroundState();
 
-    for (NSString *name in @[UIApplicationDidBecomeActiveNotification,
-                             UIApplicationDidEnterBackgroundNotification,
-                             UIApplicationDidFinishLaunchingNotification]) {
+  for (NSString *name in @[UIApplicationDidBecomeActiveNotification,
+                           UIApplicationDidEnterBackgroundNotification,
+                           UIApplicationDidFinishLaunchingNotification,
+                           UIApplicationWillResignActiveNotification,
+                           UIApplicationWillEnterForegroundNotification]) {
 
-      [[NSNotificationCenter defaultCenter] addObserver:self
-                                               selector:@selector(handleAppStateDidChange)
-                                                   name:name
-                                                 object:nil];
-    }
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAppStateDidChange:)
+                                                 name:name
+                                               object:nil];
   }
-  return self;
+
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(handleMemoryWarning)
+                                               name:UIApplicationDidReceiveMemoryWarningNotification
+                                             object:nil];
 }
 
+- (void)handleMemoryWarning
+{
+  [_bridge.eventDispatcher sendDeviceEventWithName:@"memoryWarning"
+                                              body:nil];
+}
 
 - (void)dealloc
 {
@@ -64,9 +81,18 @@ static NSString *RCTCurrentAppBackgroundState()
 
 #pragma mark - App Notification Methods
 
-- (void)handleAppStateDidChange
+- (void)handleAppStateDidChange:(NSNotification *)notification
 {
-  NSString *newState = RCTCurrentAppBackgroundState();
+  NSString *newState;
+
+  if ([notification.name isEqualToString:UIApplicationWillResignActiveNotification]) {
+    newState = @"inactive";
+  } else if ([notification.name isEqualToString:UIApplicationWillEnterForegroundNotification]) {
+    newState = @"background";
+  } else {
+    newState = RCTCurrentAppBackgroundState();
+  }
+
   if (![newState isEqualToString:_lastKnownState]) {
     _lastKnownState = newState;
     [_bridge.eventDispatcher sendDeviceEventWithName:@"appStateDidChange"
@@ -79,11 +105,9 @@ static NSString *RCTCurrentAppBackgroundState()
 /**
  * Get the current background/foreground state of the app
  */
-- (void)getCurrentAppState:(RCTResponseSenderBlock)callback
-                     error:(__unused RCTResponseSenderBlock)error
+RCT_EXPORT_METHOD(getCurrentAppState:(RCTResponseSenderBlock)callback
+                  error:(__unused RCTResponseSenderBlock)error)
 {
-  RCT_EXPORT();
-
   callback(@[@{@"app_state": _lastKnownState}]);
 }
 

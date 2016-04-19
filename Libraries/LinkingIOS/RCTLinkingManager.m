@@ -11,6 +11,7 @@
 
 #import "RCTBridge.h"
 #import "RCTEventDispatcher.h"
+#import "RCTUtils.h"
 
 NSString *const RCTOpenURLNotification = @"RCTOpenURLNotification";
 
@@ -18,15 +19,34 @@ NSString *const RCTOpenURLNotification = @"RCTOpenURLNotification";
 
 @synthesize bridge = _bridge;
 
-- (instancetype)init
+RCT_EXPORT_MODULE()
+
+- (void)setBridge:(RCTBridge *)bridge
 {
-  if ((self = [super init])) {
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleOpenURLNotification:)
-                                                 name:RCTOpenURLNotification
-                                               object:nil];
+  _bridge = bridge;
+
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(handleOpenURLNotification:)
+                                               name:RCTOpenURLNotification
+                                             object:nil];
+}
+
+- (NSDictionary<NSString *, id> *)constantsToExport
+{
+  NSURL *initialURL;
+
+  if (_bridge.launchOptions[UIApplicationLaunchOptionsURLKey]) {
+    initialURL = _bridge.launchOptions[UIApplicationLaunchOptionsURLKey];
+  } else if (&UIApplicationLaunchOptionsUserActivityDictionaryKey &&
+      _bridge.launchOptions[UIApplicationLaunchOptionsUserActivityDictionaryKey]) {
+    NSDictionary *userActivityDictionary = _bridge.launchOptions[UIApplicationLaunchOptionsUserActivityDictionaryKey];
+
+    if ([userActivityDictionary[UIApplicationLaunchOptionsUserActivityTypeKey] isEqual:NSUserActivityTypeBrowsingWeb]) {
+      initialURL = ((NSUserActivity *)userActivityDictionary[@"UIApplicationLaunchOptionsUserActivityKey"]).webpageURL;
+    }
   }
-  return self;
+
+  return @{@"initialURL": RCTNullIfNil(initialURL.absoluteString)};
 }
 
 - (void)dealloc
@@ -35,44 +55,58 @@ NSString *const RCTOpenURLNotification = @"RCTOpenURLNotification";
 }
 
 + (BOOL)application:(UIApplication *)application
-            openURL:(NSURL *)url
+            openURL:(NSURL *)URL
   sourceApplication:(NSString *)sourceApplication
          annotation:(id)annotation
 {
-  NSDictionary *payload = @{@"url": [url absoluteString]};
+  NSDictionary<NSString *, id> *payload = @{@"url": URL.absoluteString};
   [[NSNotificationCenter defaultCenter] postNotificationName:RCTOpenURLNotification
                                                       object:self
                                                     userInfo:payload];
   return YES;
 }
 
++ (BOOL)application:(UIApplication *)application
+continueUserActivity:(NSUserActivity *)userActivity
+  restorationHandler:(void (^)(NSArray *))restorationHandler
+{
+  if ([userActivity.activityType isEqualToString:NSUserActivityTypeBrowsingWeb]) {
+    NSDictionary *payload = @{@"url": userActivity.webpageURL.absoluteString};
+    [[NSNotificationCenter defaultCenter] postNotificationName:RCTOpenURLNotification
+                                                        object:self
+                                                      userInfo:payload];
+  }
+  return YES;
+}
+
 - (void)handleOpenURLNotification:(NSNotification *)notification
 {
   [_bridge.eventDispatcher sendDeviceEventWithName:@"openURL"
-                                              body:[notification userInfo]];
+                                              body:notification.userInfo];
 }
 
-- (void)openURL:(NSString *)url
+RCT_EXPORT_METHOD(openURL:(NSURL *)URL
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(__unused RCTPromiseRejectBlock)reject)
 {
-  RCT_EXPORT();
-
-  [[UIApplication sharedApplication] openURL:[NSURL URLWithString:url]];
+  BOOL opened = [RCTSharedApplication() openURL:URL];
+  resolve(@(opened));
 }
 
-- (void)canOpenURL:(NSString *)url
-          callback:(RCTResponseSenderBlock)callback
+RCT_EXPORT_METHOD(canOpenURL:(NSURL *)URL
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(__unused RCTPromiseRejectBlock)reject)
 {
-  RCT_EXPORT();
+  if (RCTRunningInAppExtension()) {
+    // Technically Today widgets can open urls, but supporting that would require
+    // a reference to the NSExtensionContext
+    resolve(@NO);
+    return;
+  }
 
-  BOOL supported = [[UIApplication sharedApplication] canOpenURL:[NSURL URLWithString:url]];
-  callback(@[@(supported)]);
-}
-
-- (NSDictionary *)constantsToExport
-{
-  return @{
-    @"initialURL": [[_bridge.launchOptions objectForKey:UIApplicationLaunchOptionsURLKey] absoluteString] ?: [NSNull null]
-  };
+  // This can be expensive, so we deliberately don't call on main thread
+  BOOL canOpen = [RCTSharedApplication() canOpenURL:URL];
+  resolve(@(canOpen));
 }
 
 @end

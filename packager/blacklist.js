@@ -8,36 +8,54 @@
  */
 'use strict';
 
-// Don't forget to everything listed here to `testConfig.json`
+var path = require('path');
+
+// Don't forget to everything listed here to `package.json`
 // modulePathIgnorePatterns.
 var sharedBlacklist = [
-  __dirname,
-  'website',
-  'node_modules/react-tools/src/utils/ImmutableObject.js',
-  'node_modules/react-tools/src/core/ReactInstanceHandles.js',
-  'node_modules/react-tools/src/event/EventPropagators.js'
+  /node_modules[/\\]react[/\\]dist[/\\].*/,
+  'node_modules/react/lib/React.js',
+  'node_modules/react/lib/ReactDOM.js',
+
+  'downstream/core/invariant.js',
+
+  /website\/node_modules\/.*/,
+
+  // TODO(jkassens, #9876132): Remove this rule when it's no longer needed.
+  'Libraries/Relay/relay/tools/relayUnstableBatchedUpdates.js',
 ];
 
-var webBlacklist = [
-  '.ios.js'
-];
+var platformBlacklists = {
+  web: [
+    '.ios.js',
+    '.android.js',
+  ],
+  ios: [
+    '.web.js',
+    '.android.js',
+  ],
+  android: [
+    '.web.js',
+    '.ios.js',
+  ],
+};
 
-var iosBlacklist = [
-  'node_modules/react-tools/src/browser/ui/React.js',
-  'node_modules/react-tools/src/browser/eventPlugins/ResponderEventPlugin.js',
-  // 'node_modules/react-tools/src/vendor/core/ExecutionEnvironment.js',
-  '.web.js',
-  '.android.js',
-];
-
-function escapeRegExp(str) {
-  return str.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, '\\$&');
+function escapeRegExp(pattern) {
+  if (Object.prototype.toString.call(pattern) === '[object RegExp]') {
+    return pattern.source.replace(/\//g, path.sep);
+  } else if (typeof pattern === 'string') {
+    var escaped = pattern.replace(/[\-\[\]\{\}\(\)\*\+\?\.\\\^\$\|]/g, '\\$&');
+    // convert the '/' into an escaped local file separator
+    return escaped.replace(/\//g,'\\' + path.sep);
+  } else {
+    throw new Error('Unexpected packager blacklist pattern: ' + pattern);
+  }
 }
 
-function blacklist(isWeb, additionalBlacklist) {
+function blacklist(platform, additionalBlacklist) {
   return new RegExp('(' +
     (additionalBlacklist || []).concat(sharedBlacklist)
-      .concat(isWeb ? webBlacklist : iosBlacklist)
+      .concat(platformBlacklists[platform] || [])
       .map(escapeRegExp)
       .join('|') +
     ')$'

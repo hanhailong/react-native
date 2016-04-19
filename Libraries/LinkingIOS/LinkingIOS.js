@@ -11,44 +11,54 @@
  */
 'use strict';
 
-var RCTDeviceEventEmitter = require('RCTDeviceEventEmitter');
+var Linking = require('Linking');
 var RCTLinkingManager = require('NativeModules').LinkingManager;
-var invariant = require('invariant');
+var invariant = require('fbjs/lib/invariant');
 
-var _notifHandlers = {};
-var _initialURL = RCTLinkingManager &&
-  RCTLinkingManager.initialURL;
-
-var DEVICE_NOTIF_EVENT = 'openURL';
+var _initialURL = RCTLinkingManager && RCTLinkingManager.initialURL;
 
 /**
- * `LinkingIOS` gives you an interface to interact with both incoming and
- * outgoing app links.
+ * NOTE: `LinkingIOS` is being deprecated. Use `Linking` instead.
+ *
+ * `LinkingIOS` gives you a general interface to interact with both incoming
+ * and outgoing app links.
  *
  * ### Basic Usage
  *
  * #### Handling deep links
  *
- * If your app was launched from an external URL registered with your app, you can
- * access and handle it from any component you want with the following:
+ * If your app was launched from an external url registered to your app you can
+ * access and handle it from any component you want with
  *
  * ```
  * componentDidMount() {
- *   var url = LinkingIOS.popInitialURL();
- *   if (url) { ... }
+ *  var url = LinkingIOS.popInitialURL();
  * }
  * ```
  *
- * If you also want to listen to incoming app links during your app's
+ * In case you also want to listen to incoming app links during your app's
  * execution you'll need to add the following lines to you `*AppDelegate.m`:
  *
  * ```
- * - (BOOL)application:(UIApplication *)application openURL:(NSURL *)url sourceApplication:(NSString *)sourceApplication annotation:(id)annotation {
- *   return [RCTLinkingManager application:application openURL:url sourceApplication:sourceApplication annotation:annotation];
+ * - (BOOL)application:(UIApplication *)application openURL:(NSURL *)url
+ *   sourceApplication:(NSString *)sourceApplication annotation:(id)annotation
+ * {
+ *   return [RCTLinkingManager application:application openURL:url
+ *                       sourceApplication:sourceApplication annotation:annotation];
  * }
+ *
+ * // Only if your app is using [Universal Links](https://developer.apple.com/library/prerelease/ios/documentation/General/Conceptual/AppSearch/UniversalLinks.html).
+ * - (BOOL)application:(UIApplication *)application continueUserActivity:(NSUserActivity *)userActivity
+ *  restorationHandler:(void (^)(NSArray * _Nullable))restorationHandler
+ * {
+ *  return [RCTLinkingManager application:application
+ *                   continueUserActivity:userActivity
+ *                     restorationHandler:restorationHandler];
+ * }
+ *
  * ```
  *
- * And in your React component, you'll then be able to listen to the events from
+ * And then on your React component you'll be able to listen to the events on
  * `LinkingIOS` as follows
  *
  * ```
@@ -65,14 +75,13 @@ var DEVICE_NOTIF_EVENT = 'openURL';
  *
  * #### Triggering App links
  *
- * To trigger an app link (browser, email, or custom schemes) you can call:
+ * To trigger an app link (browser, email or custom schemas), call
  *
  * ```
  * LinkingIOS.openURL(url)
  * ```
  *
- * If you want to check if a URL can be opened by an installed app on the system you can call
- * 
+ * If you want to check if any installed app can handle a given URL beforehand, call
  * ```
  * LinkingIOS.canOpenURL(url, (supported) => {
  *   if (!supported) {
@@ -87,69 +96,60 @@ class LinkingIOS {
   /**
    * Add a handler to LinkingIOS changes by listening to the `url` event type
    * and providing the handler
+   *
+   * @deprecated
    */
   static addEventListener(type: string, handler: Function) {
-    invariant(
-      type === 'url',
-      'LinkingIOS only supports `url` events'
-    );
-    _notifHandlers[handler] = RCTDeviceEventEmitter.addListener(
-      DEVICE_NOTIF_EVENT,
-      (notifData) => {
-        handler(new LinkingIOS(notifData));
-      }
-    );
+    console.warn('"LinkingIOS.addEventListener" is deprecated. Use "Linking.addEventListener" instead.');
+    Linking.addEventListener(type, handler);
   }
 
   /**
    * Remove a handler by passing the `url` event type and the handler
+   *
+   * @deprecated
    */
   static removeEventListener(type: string, handler: Function ) {
-    invariant(
-      type === 'url',
-      'LinkingIOS only supports `url` events'
-    );
-    if (!_notifHandlers[handler]) {
-      return;
-    }
-    _notifHandlers[handler].remove();
-    _notifHandlers[handler] = null;
+    console.warn('"LinkingIOS.removeEventListener" is deprecated. Use "Linking.removeEventListener" instead.');
+    Linking.removeEventListener(type, handler);
   }
 
   /**
    * Try to open the given `url` with any of the installed apps.
-   * If multiple applications can open `url`, the one that opens
-   * is undefined.
+   *
+   * @deprecated
    */
   static openURL(url: string) {
-    invariant(
-      typeof url === 'string',
-      'Invalid url: should be a string'
-    );
-    RCTLinkingManager.openURL(url);
+    console.warn('"LinkingIOS.openURL" is deprecated. Use the promise based "Linking.openURL" instead.');
+    Linking.openURL(url);
   }
 
   /**
-   * Determine whether an installed app can handle a given `url`.
+   * Determine whether or not an installed app can handle a given URL.
    * The callback function will be called with `bool supported` as the only argument
+   *
+   * NOTE: As of iOS 9, your app needs to provide the `LSApplicationQueriesSchemes` key
+   * inside `Info.plist`.
+   *
+   * @deprecated
    */
   static canOpenURL(url: string, callback: Function) {
-    invariant(
-      typeof url === 'string',
-      'Invalid url: should be a string'
-    );
+    console.warn('"LinkingIOS.canOpenURL" is deprecated. Use the promise based "Linking.canOpenURL" instead.');
     invariant(
       typeof callback === 'function',
       'A valid callback function is required'
     );
-    RCTLinkingManager.canOpenURL(url, callback);
+    Linking.canOpenURL(url).then(callback);
   }
 
   /**
-   * If the app launch was triggered by an app link, it will pop the link URL,
+   * If the app launch was triggered by an app link, it will pop the link url,
    * otherwise it will return `null`
+   *
+   * @deprecated
    */
   static popInitialURL(): ?string {
+    console.warn('"LinkingIOS.popInitialURL" is deprecated. Use the promise based "Linking.getInitialURL" instead.');
     var initialURL = _initialURL;
     _initialURL = null;
     return initialURL;
